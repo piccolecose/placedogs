@@ -48,8 +48,8 @@ async fn fresh_and_cached_images_have_matching_content_types() {
         );
         let body = test::read_body(response).await;
         assert!(body.starts_with(b"\x89PNG\r\n\x1a\n"));
-        let decoded = photon_rs::native::open_image_from_bytes(&body).unwrap();
-        assert_eq!((decoded.get_width(), decoded.get_height()), (width, height));
+        let decoded = image::load_from_memory(&body).unwrap();
+        assert_eq!((decoded.width(), decoded.height()), (width, height));
 
         if let Some(ref fresh) = fresh_body {
             assert_eq!(&body, fresh);
