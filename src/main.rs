@@ -1,7 +1,6 @@
-extern crate photon_rs;
 #[cfg(test)]
 mod tests;
-use photon_rs::transform::{resize, SamplingFilter};
+use image::{imageops::FilterType, ImageFormat};
 
 use actix_files::Files;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, http::StatusCode, HttpRequest, middleware::Logger};
@@ -363,11 +362,13 @@ async fn resize_image(
         Ok(image_data) => {
             // Use rayon to process the image in a separate thread pool
             match web::block(move || {
-                let img = photon_rs::native::open_image_from_bytes(&image_data)
+                let img = image::load_from_memory(&image_data)
                     .map_err(|e| format!("Failed to load image: {}", e))?;
-                let resized = resize(&img, width, height, SamplingFilter::Triangle);
-                // Photon encodes get_bytes() as PNG, regardless of the source format.
-                Ok::<Vec<u8>, String>(resized.get_bytes())
+                let mut buf = std::io::Cursor::new(Vec::new());
+                img.resize_exact(width, height, FilterType::Triangle)
+                    .write_to(&mut buf, ImageFormat::Png)
+                    .map_err(|e| format!("Failed to encode image: {}", e))?;
+                Ok::<Vec<u8>, String>(buf.into_inner())
             })
             .await
             {
