@@ -1,6 +1,26 @@
 use super::*;
-use actix_web::{http::header, test};
+use actix_web::{http::header, test, HttpResponse};
 use std::path::PathBuf;
+
+#[actix_web::test]
+async fn security_headers_are_set() {
+    let app = test::init_service(
+        App::new()
+            .wrap(security_headers())
+            .route("/", web::get().to(|| async { HttpResponse::Ok().finish() })),
+    )
+    .await;
+    let response =
+        test::call_service(&app, test::TestRequest::get().uri("/").to_request()).await;
+    assert_eq!(response.headers().get("X-Frame-Options").unwrap(), "DENY");
+    assert!(response
+        .headers()
+        .get("Content-Security-Policy")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .contains("frame-ancestors 'none'"));
+}
 
 // Reserve a new cache directory so tests never overwrite existing cached images.
 struct TestCache(PathBuf);
