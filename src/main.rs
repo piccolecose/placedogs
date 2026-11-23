@@ -3,7 +3,7 @@ mod tests;
 use image::{imageops::FilterType, ImageFormat};
 
 use actix_files::Files;
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, http::StatusCode, HttpRequest, middleware::Logger};
+use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, http::StatusCode, HttpRequest, middleware::{Logger, DefaultHeaders}};
 use tokio::fs as tokio_fs;
 use bytes::Bytes;
 use rand;
@@ -241,6 +241,28 @@ impl RequestLogInfo {
             details
         );
     }
+}
+
+// CodeQL alert #2 flagged CSP/frame protection disabled on the old
+// Express+Helmet server; that server's gone (replaced by this one), which
+// had no equivalent headers at all. /{w}/{h} is meant to be hotlinked as
+// <img> from other sites, which CSP/X-Frame don't restrict — only framing
+// the HTML page itself.
+fn security_headers() -> DefaultHeaders {
+    DefaultHeaders::new()
+        .add(("X-Content-Type-Options", "nosniff"))
+        .add(("X-Frame-Options", "DENY"))
+        .add(("Referrer-Policy", "strict-origin-when-cross-origin"))
+        // 'unsafe-inline' for the gtag snippet in static/index.html.
+        // ponytail: inline script over a nonce/hash, revisit if a stricter
+        // CSP is ever required.
+        .add((
+            "Content-Security-Policy",
+            "default-src 'self'; frame-ancestors 'none'; \
+             script-src 'self' 'unsafe-inline' https://www.googletagmanager.com; \
+             connect-src 'self' https://www.google-analytics.com; \
+             img-src 'self'; style-src 'self'",
+        ))
 }
 
 struct RateLimitingMiddleware {
@@ -481,6 +503,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(rate_limiter.clone())
             .app_data(google_analytics.clone())
             .wrap(Logger::default()) // Wrap the app with the logger middleware
+            .wrap(security_headers())
             .service(resize_image)
             .service(health_check)
             .service(Files::new("/", "./static").index_file("index.html"))
