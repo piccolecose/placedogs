@@ -3,27 +3,28 @@ mod tests;
 use image::{imageops::FilterType, ImageFormat};
 
 use actix_files::Files;
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder, http::StatusCode, HttpRequest, middleware::{Logger, DefaultHeaders}};
-use tokio::fs as tokio_fs;
+use actix_web::{
+    get,
+    http::StatusCode,
+    middleware::{DefaultHeaders, Logger},
+    web, App, HttpRequest, HttpResponse, HttpServer, Responder,
+};
 use bytes::Bytes;
-use rand;
-use std::fs;
 use chrono::Utc;
-use std::time::Instant;
 use governor::{Quota, RateLimiter};
+use std::fs;
 use std::num::NonZeroU32;
 use std::sync::Arc;
-use sysinfo::System;
-use tokio::sync::Mutex;
 use std::time::Duration;
-use log;
-use env_logger;
+use std::time::Instant;
+use sysinfo::System;
+use tokio::fs as tokio_fs;
+use tokio::sync::Mutex;
 use url::Url;
-
 
 // Rate limiter configuration
 const REQUESTS_PER_SECOND: u32 = 100;
-const MEMORY_THRESHOLD_PERCENT: f32 = 90.0;  // Memory usage threshold
+const MEMORY_THRESHOLD_PERCENT: f32 = 90.0; // Memory usage threshold
 
 // Google Analytics configuration
 const GA_MEASUREMENT_ID: &str = "G-W347P2XQR3";
@@ -48,7 +49,14 @@ impl GoogleAnalytics {
         }
     }
 
-    async fn track_image_request(&self, request_info: &RequestLogInfo, width: u32, height: u32, cached: bool, processing_time_ms: f64) {
+    async fn track_image_request(
+        &self,
+        request_info: &RequestLogInfo,
+        width: u32,
+        height: u32,
+        cached: bool,
+        processing_time_ms: f64,
+    ) {
         let api_secret = match &self.api_secret {
             Some(secret) => secret,
             None => return,
@@ -104,12 +112,9 @@ struct RequestLogInfo {
     referer: Option<String>,
     referer_domain: Option<String>,
     accept_language: Option<String>,
-    accept_encoding: Option<String>,
     x_forwarded_for: Option<String>,
     x_real_ip: Option<String>,
     cf_connecting_ip: Option<String>, // Cloudflare
-    x_forwarded_proto: Option<String>,
-    host: Option<String>,
     method: String,
     uri: String,
     timestamp: String,
@@ -121,15 +126,26 @@ impl RequestLogInfo {
         let headers = req.headers();
 
         // Extract IP with fallback chain
-        let ip = connection_info.realip_remote_addr()
+        let ip = connection_info
+            .realip_remote_addr()
             .or_else(|| headers.get("X-Real-IP").and_then(|v| v.to_str().ok()))
-            .or_else(|| headers.get("CF-Connecting-IP").and_then(|v| v.to_str().ok()))
-            .or_else(|| headers.get("X-Forwarded-For").and_then(|v| v.to_str().ok()).map(|s| s.split(',').next().unwrap_or("unknown")))
+            .or_else(|| {
+                headers
+                    .get("CF-Connecting-IP")
+                    .and_then(|v| v.to_str().ok())
+            })
+            .or_else(|| {
+                headers
+                    .get("X-Forwarded-For")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|s| s.split(',').next().unwrap_or("unknown"))
+            })
             .unwrap_or("unknown")
             .to_string();
 
-                // Extract referer and domain
-        let referer = headers.get("Referer")
+        // Extract referer and domain
+        let referer = headers
+            .get("Referer")
             .and_then(|v| v.to_str().ok())
             .map(|s| s.to_string());
 
@@ -145,31 +161,27 @@ impl RequestLogInfo {
 
         RequestLogInfo {
             ip,
-            user_agent: headers.get("User-Agent")
+            user_agent: headers
+                .get("User-Agent")
                 .and_then(|v| v.to_str().ok())
                 .unwrap_or("unknown")
                 .to_string(),
             referer,
             referer_domain,
-            accept_language: headers.get("Accept-Language")
+            accept_language: headers
+                .get("Accept-Language")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string()),
-            accept_encoding: headers.get("Accept-Encoding")
+            x_forwarded_for: headers
+                .get("X-Forwarded-For")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string()),
-            x_forwarded_for: headers.get("X-Forwarded-For")
+            x_real_ip: headers
+                .get("X-Real-IP")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string()),
-            x_real_ip: headers.get("X-Real-IP")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string()),
-            cf_connecting_ip: headers.get("CF-Connecting-IP")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string()),
-            x_forwarded_proto: headers.get("X-Forwarded-Proto")
-                .and_then(|v| v.to_str().ok())
-                .map(|s| s.to_string()),
-            host: headers.get("Host")
+            cf_connecting_ip: headers
+                .get("CF-Connecting-IP")
                 .and_then(|v| v.to_str().ok())
                 .map(|s| s.to_string()),
             method: req.method().to_string(),
@@ -179,13 +191,17 @@ impl RequestLogInfo {
     }
 
     fn log_request(&self, additional_info: &str) {
-        let referer_info = self.referer_domain.as_ref()
+        let referer_info = self
+            .referer_domain
+            .as_ref()
             .map(|d| format!(", Referer: {}", d))
-            .unwrap_or_else(|| "".to_string());
+            .unwrap_or_default();
 
-        let language_info = self.accept_language.as_ref()
+        let language_info = self
+            .accept_language
+            .as_ref()
             .map(|l| format!(", Lang: {}", l.split(',').next().unwrap_or("unknown")))
-            .unwrap_or_else(|| "".to_string());
+            .unwrap_or_default();
 
         log::info!(
             "REQUEST [{}] {} {} from IP: {}{}{}{}",
@@ -209,7 +225,10 @@ impl RequestLogInfo {
         }
 
         // Log proxy/forwarding headers for debugging
-        if self.x_forwarded_for.is_some() || self.x_real_ip.is_some() || self.cf_connecting_ip.is_some() {
+        if self.x_forwarded_for.is_some()
+            || self.x_real_ip.is_some()
+            || self.cf_connecting_ip.is_some()
+        {
             log::debug!(
                 "PROXY_HEADERS IP: {}, X-Forwarded-For: {:?}, X-Real-IP: {:?}, CF-Connecting-IP: {:?}",
                 self.ip,
@@ -266,7 +285,13 @@ fn security_headers() -> DefaultHeaders {
 }
 
 struct RateLimitingMiddleware {
-    limiter: Arc<RateLimiter<governor::state::NotKeyed, governor::state::InMemoryState, governor::clock::DefaultClock>>,
+    limiter: Arc<
+        RateLimiter<
+            governor::state::NotKeyed,
+            governor::state::InMemoryState,
+            governor::clock::DefaultClock,
+        >,
+    >,
 }
 
 impl RateLimitingMiddleware {
@@ -332,11 +357,10 @@ async fn resize_image(
     // Apply rate limiting
     if rate_limiter.limiter.check().is_err() {
         request_log_info.log_rate_limit();
-        return HttpResponse::TooManyRequests()
-            .json(serde_json::json!({
-                "error": "Too many requests",
-                "retry_after": "1 second"
-            }));
+        return HttpResponse::TooManyRequests().json(serde_json::json!({
+            "error": "Too many requests",
+            "retry_after": "1 second"
+        }));
     }
 
     let start_time = Instant::now();
@@ -345,15 +369,14 @@ async fn resize_image(
     // Validate image dimensions
     if width == 0 || height == 0 || width > 3000 || height > 3000 {
         request_log_info.log_error("Invalid image dimensions", &format!("{}x{}", width, height));
-        return HttpResponse::BadRequest()
-            .json(serde_json::json!({
-                "error": "Invalid image dimensions",
-                "message": "Width and height must be between 1 and 3000 pixels",
-                "requested": {
-                    "width": width,
-                    "height": height
-                }
-            }));
+        return HttpResponse::BadRequest().json(serde_json::json!({
+            "error": "Invalid image dimensions",
+            "message": "Width and height must be between 1 and 3000 pixels",
+            "requested": {
+                "width": width,
+                "height": height
+            }
+        }));
     }
 
     request_log_info.log_request("Image dimensions validated");
@@ -363,7 +386,10 @@ async fn resize_image(
     let cache_path = format!("./.cache/{}/{}/{}", random_num, width, height);
     let image_path = format!("./images/{}.jpeg", random_num);
 
-    request_log_info.log_request(&format!("Selected image {} from {} available images", random_num, **image_count));
+    request_log_info.log_request(&format!(
+        "Selected image {} from {} available images",
+        random_num, **image_count
+    ));
 
     // Check if cached version exists
     if let Ok(cached_data) = tokio_fs::read(&cache_path).await {
@@ -372,7 +398,8 @@ async fn resize_image(
         request_log_info.log_request(&format!("Serving cached image (took {:.2}ms)", elapsed_ms));
 
         // Track with Google Analytics
-        ga.track_image_request(&request_log_info, width, height, true, elapsed_ms).await;
+        ga.track_image_request(&request_log_info, width, height, true, elapsed_ms)
+            .await;
 
         return HttpResponse::Ok()
             .content_type("image/png")
@@ -398,23 +425,32 @@ async fn resize_image(
                     // Create cache directory structure if it doesn't exist
                     let cache_dir = format!("./.cache/{}/{}", random_num, width);
                     if let Err(e) = tokio_fs::create_dir_all(&cache_dir).await {
-                        request_log_info.log_error("Failed to create cache directory", &e.to_string());
+                        request_log_info
+                            .log_error("Failed to create cache directory", &e.to_string());
                     } else {
                         let buf_clone = buf.clone(); // Clone the buffer for caching
                         let cache_path_clone = cache_path.clone();
                         tokio::spawn(async move {
                             if let Err(e) = tokio_fs::write(&cache_path_clone, &buf_clone).await {
-                                log::error!("Failed to write cache file {}: {}", cache_path_clone, e);
+                                log::error!(
+                                    "Failed to write cache file {}: {}",
+                                    cache_path_clone,
+                                    e
+                                );
                             }
                         });
                     }
 
                     let elapsed = start_time.elapsed();
                     let elapsed_ms = elapsed.as_secs_f64() * 1000.0;
-                    request_log_info.log_request(&format!("Successfully served fresh image (took {:.2}ms)", elapsed_ms));
+                    request_log_info.log_request(&format!(
+                        "Successfully served fresh image (took {:.2}ms)",
+                        elapsed_ms
+                    ));
 
                     // Track with Google Analytics
-                    ga.track_image_request(&request_log_info, width, height, false, elapsed_ms).await;
+                    ga.track_image_request(&request_log_info, width, height, false, elapsed_ms)
+                        .await;
 
                     HttpResponse::Ok()
                         .content_type("image/png")
@@ -425,7 +461,8 @@ async fn resize_image(
                     HttpResponse::InternalServerError().body("Failed to process image")
                 }
                 Err(e) => {
-                    request_log_info.log_error("Thread pool/image processing panic", &e.to_string());
+                    request_log_info
+                        .log_error("Thread pool/image processing panic", &e.to_string());
                     HttpResponse::InternalServerError().body("Failed to process image")
                 }
             }
@@ -451,11 +488,45 @@ async fn health_check(req: HttpRequest, monitor: web::Data<SystemMonitor>) -> im
 
     request_log_info.log_request("Health check response");
 
-    HttpResponse::build(status)
-        .json(health_data)
+    HttpResponse::build(status).json(health_data)
 }
 
+// Count the number of JPEG files in the images directory
+fn count_images(dir: &str) -> u32 {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| {
+                            ext.eq_ignore_ascii_case("jpeg") || ext.eq_ignore_ascii_case("jpg")
+                        })
+                        .unwrap_or(false)
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
+}
 
+fn configure_app(
+    cfg: &mut web::ServiceConfig,
+    image_count: u32,
+    system_monitor: web::Data<SystemMonitor>,
+    rate_limiter: web::Data<RateLimitingMiddleware>,
+    google_analytics: web::Data<GoogleAnalytics>,
+) {
+    cfg.app_data(web::Data::new(image_count))
+        .app_data(system_monitor)
+        .app_data(rate_limiter)
+        .app_data(google_analytics)
+        .service(resize_image)
+        .service(health_check)
+        .service(Files::new("/", "./static").index_file("index.html"));
+}
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
@@ -464,7 +535,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
 
     // Create cache directory if it doesn't exist
-    if let Err(_) = fs::create_dir_all("./.cache") {
+    if fs::create_dir_all("./.cache").is_err() {
         log::error!("Warning: Failed to create cache directory");
     }
 
@@ -473,21 +544,7 @@ async fn main() -> std::io::Result<()> {
     let rate_limiter = web::Data::new(RateLimitingMiddleware::new());
     let google_analytics = web::Data::new(GoogleAnalytics::new());
 
-    // Count the number of JPEG files in the images directory
-    let image_count = fs::read_dir("./images")
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| {
-                    entry.path()
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| ext.eq_ignore_ascii_case("jpeg") || ext.eq_ignore_ascii_case("jpg"))
-                        .unwrap_or(false)
-                })
-                .count() as u32
-        })
-        .unwrap_or(0);
+    let image_count = count_images("./images");
 
     log::info!("Found {} images in the images directory", image_count);
     log::info!("Starting server at http://{}", addr);
@@ -497,16 +554,15 @@ async fn main() -> std::io::Result<()> {
     log::info!("  - GET /* - Serve static files from ./static");
 
     HttpServer::new(move || {
+        let (monitor, limiter, analytics) = (
+            system_monitor.clone(),
+            rate_limiter.clone(),
+            google_analytics.clone(),
+        );
         App::new()
-            .app_data(web::Data::new(image_count.clone()))
-            .app_data(system_monitor.clone())
-            .app_data(rate_limiter.clone())
-            .app_data(google_analytics.clone())
+            .configure(move |cfg| configure_app(cfg, image_count, monitor, limiter, analytics))
             .wrap(Logger::default()) // Wrap the app with the logger middleware
             .wrap(security_headers())
-            .service(resize_image)
-            .service(health_check)
-            .service(Files::new("/", "./static").index_file("index.html"))
     })
     .bind(addr)?
     .run()
