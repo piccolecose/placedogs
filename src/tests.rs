@@ -10,8 +10,7 @@ async fn security_headers_are_set() {
             .route("/", web::get().to(|| async { HttpResponse::Ok().finish() })),
     )
     .await;
-    let response =
-        test::call_service(&app, test::TestRequest::get().uri("/").to_request()).await;
+    let response = test::call_service(&app, test::TestRequest::get().uri("/").to_request()).await;
     assert_eq!(response.headers().get("X-Frame-Options").unwrap(), "DENY");
     assert!(response
         .headers()
