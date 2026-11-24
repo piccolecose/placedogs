@@ -491,6 +491,43 @@ async fn health_check(req: HttpRequest, monitor: web::Data<SystemMonitor>) -> im
     HttpResponse::build(status).json(health_data)
 }
 
+// Count the number of JPEG files in the images directory
+fn count_images(dir: &str) -> u32 {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    entry
+                        .path()
+                        .extension()
+                        .and_then(|ext| ext.to_str())
+                        .map(|ext| {
+                            ext.eq_ignore_ascii_case("jpeg") || ext.eq_ignore_ascii_case("jpg")
+                        })
+                        .unwrap_or(false)
+                })
+                .count() as u32
+        })
+        .unwrap_or(0)
+}
+
+fn configure_app(
+    cfg: &mut web::ServiceConfig,
+    image_count: u32,
+    system_monitor: web::Data<SystemMonitor>,
+    rate_limiter: web::Data<RateLimitingMiddleware>,
+    google_analytics: web::Data<GoogleAnalytics>,
+) {
+    cfg.app_data(web::Data::new(image_count))
+        .app_data(system_monitor)
+        .app_data(rate_limiter)
+        .app_data(google_analytics)
+        .service(resize_image)
+        .service(health_check)
+        .service(Files::new("/", "./static").index_file("index.html"));
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize logger with debug level
@@ -507,24 +544,7 @@ async fn main() -> std::io::Result<()> {
     let rate_limiter = web::Data::new(RateLimitingMiddleware::new());
     let google_analytics = web::Data::new(GoogleAnalytics::new());
 
-    // Count the number of JPEG files in the images directory
-    let image_count = fs::read_dir("./images")
-        .map(|entries| {
-            entries
-                .filter_map(Result::ok)
-                .filter(|entry| {
-                    entry
-                        .path()
-                        .extension()
-                        .and_then(|ext| ext.to_str())
-                        .map(|ext| {
-                            ext.eq_ignore_ascii_case("jpeg") || ext.eq_ignore_ascii_case("jpg")
-                        })
-                        .unwrap_or(false)
-                })
-                .count() as u32
-        })
-        .unwrap_or(0);
+    let image_count = count_images("./images");
 
     log::info!("Found {} images in the images directory", image_count);
     log::info!("Starting server at http://{}", addr);
@@ -534,16 +554,15 @@ async fn main() -> std::io::Result<()> {
     log::info!("  - GET /* - Serve static files from ./static");
 
     HttpServer::new(move || {
+        let (monitor, limiter, analytics) = (
+            system_monitor.clone(),
+            rate_limiter.clone(),
+            google_analytics.clone(),
+        );
         App::new()
-            .app_data(web::Data::new(image_count))
-            .app_data(system_monitor.clone())
-            .app_data(rate_limiter.clone())
-            .app_data(google_analytics.clone())
+            .configure(move |cfg| configure_app(cfg, image_count, monitor, limiter, analytics))
             .wrap(Logger::default()) // Wrap the app with the logger middleware
             .wrap(security_headers())
-            .service(resize_image)
-            .service(health_check)
-            .service(Files::new("/", "./static").index_file("index.html"))
     })
     .bind(addr)?
     .run()
