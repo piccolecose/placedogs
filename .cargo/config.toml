@@ -1,0 +1,3 @@
+[alias]
+# Tests with line coverage; fails below the threshold. CI runs this.
+cov = "llvm-cov --summary-only --fail-under-lines 75"
